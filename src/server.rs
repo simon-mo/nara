@@ -1,11 +1,8 @@
-use async_timer::oneshot::{Oneshot};
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Client, Request, Response, Server as HyperServer};
+use hyper::{Body, Request, Response, Server as HyperServer};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
-use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
 
 enum Command {
@@ -13,13 +10,15 @@ enum Command {
 }
 
 pub struct Server {
-    local_port: u16,
-    notify_event: oneshot::Sender<bool>,
-    batch_size: u64,
+    pub local_port: u16,
+    pub batch_size: u64,
 }
 
 impl Server {
-    async fn batcher_task(&self, mut batcher_receiver) {
+    async fn batcher_task(
+        self: Arc<Server>,
+        mut batcher_receiver: mpsc::UnboundedReceiver<(Command, oneshot::Sender<u64>)>,
+    ) {
         let mut batch_id: u64 = 0;
         let mut curr_batch_size: u64 = 0;
         let mut waiters: Vec<oneshot::Sender<u64>> = vec![];
@@ -41,30 +40,26 @@ impl Server {
         }
     }
 
-    async fn serve(&self) {
+    pub async fn serve(self, notify_event: oneshot::Sender<bool>) {
         let addr = SocketAddr::from(([127, 0, 0, 1], self.local_port));
 
-        let (batcher_sender, mut batcher_receiver) =
+        let (batcher_sender, batcher_receiver) =
             mpsc::unbounded_channel::<(Command, oneshot::Sender<u64>)>();
-        
-        tokio::spawn(async move {
-            self.batcher_task(batcher_receiver).await
-        });
-        
+
+        let self_ref = Arc::new(self);
+        let cloned_ref = self_ref.clone();
+        let handle = tokio::spawn(async move { cloned_ref.batcher_task(batcher_receiver).await });
+
         let make_svc = make_service_fn(|_conn| {
-            // let cmd_tx = cmd_tx.clone();
+            let batcher_sender = batcher_sender.clone();
             async move {
                 Ok::<_, Infallible>(service_fn(move |_req: Request<Body>| {
-                    // let mut cmd_tx = cmd_tx.clone();
+                    let batcher_sender = batcher_sender.clone();
                     async move {
-                        // let (req_tx, resp_rx) = oneshot::channel::<u64>();
-                        // cmd_tx
-                        //     .send((Command::Increment, req_tx))
-                        //     .await
-                        //     .ok()
-                        //     .unwrap();
-                        // let res = resp_rx.await.unwrap();
-                        // println!("We are batch {:#?}", res);
+                        let (req_tx, resp_rx) = oneshot::channel::<u64>();
+                        batcher_sender.send((Command::Increment, req_tx));
+                        let res = resp_rx.await.unwrap();
+                        println!("We are batch {:#?}", res);
                         Ok::<_, Infallible>(Response::new(Body::from("Hello, World")))
                     }
                 }))
@@ -72,9 +67,10 @@ impl Server {
         });
 
         let server = HyperServer::bind(&addr).serve(make_svc);
-        started_event.send(true);
+        notify_event.send(true);
         if let Err(e) = server.await {
             eprintln!("server error: {}", e);
         }
+        drop(handle);
     }
 }

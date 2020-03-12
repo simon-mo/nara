@@ -9,5 +9,5 @@ edition = "2018"
 [dependencies]
 hyper = "0.13"
 tokio = { version = "0.2", features = ["full"] }
-futures = ""
-async-timer = {version = "", features = ["tokio_on"]}
+futures = "0.3.4"
+async-timer = {version = "0.7.3", features = ["tokio_on"]}
