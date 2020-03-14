@@ -1,11 +1,14 @@
 use async_timer::oneshot::{Oneshot, Timer};
+use hyper::Body;
 use hyper::Client;
-use std::collections::HashMap;
+
+use crate::reporter::Event;
+use std::sync::mpsc as ThreadedMpcs;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
-use tokio::sync::{mpsc, oneshot};
 
+#[derive(Clone)]
 pub struct Bencher {
     pub num_requests: usize,
     pub url: String,
@@ -13,60 +16,54 @@ pub struct Bencher {
 }
 
 impl Bencher {
-    pub async fn bench(self) {
-        let client = Arc::new(Client::new());
-        let start_of_the_world = Instant::now();
-        let (tx, mut rx) = mpsc::channel::<Instant>(self.num_requests);
+    pub async fn bench(self, send_channel: ThreadedMpcs::Sender<Event>) {
+        let mut conn = hyper::client::HttpConnector::new();
+        conn.set_reuse_address(true).set_nodelay(true);
+
+        let client = Arc::new(
+            // Client::new()
+            Client::builder()
+                .pool_max_idle_per_host(0)
+                .build::<_, Body>(conn),
+        );
 
         let mut futures: Vec<tokio::task::JoinHandle<_>> = vec![];
+
         for _ in 0..self.num_requests {
+            send_channel
+                .send(Event::RequestStart)
+                .expect("Error sending request start event");
             let uri = self.url.parse().unwrap();
             let shared_client = client.clone();
-            let mut tx = tx.clone();
 
+            let cloned_channel = send_channel.clone();
             let handle = tokio::spawn(async move {
                 let start = Instant::now();
-                let resp = shared_client.get(uri).await.unwrap();
-                let end = Instant::now();
-                let duration = end - start;
-                let ms = duration.as_millis();
-                tx.send(start).await;
+                let resp = shared_client.get(uri).await;
+                match resp {
+                    Ok(_) => {
+                        cloned_channel
+                            .send(Event::RequestDone((start, Instant::now())))
+                            .expect("Error sending request done event");
+                    }
+                    Err(err) => {
+                        cloned_channel
+                            .send(Event::RequestErrored(err))
+                            .expect("Error sending request errored event");
+                    }
+                }
             });
 
-            let before = Instant::now();
-            Timer::new(Duration::from_micros(4300)).await;
-            println!("Precison: {} us", (before.elapsed()).as_micros());
+            Timer::new(Duration::from_micros(self.delay_for_us)).await;
 
             futures.push(handle);
         }
 
-        drop(tx); // Drop the original tx because it will never be used.
-
         for fut in futures {
-            fut.await;
+            fut.await.expect("Single request panicked.");
         }
-        println!("All request done!");
-
-        let mut empirical_sent_ts: Vec<Instant> = vec![];
-        loop {
-            let val = rx.recv().await;
-            println!("{:?}", val);
-            match val {
-                Some(v) => empirical_sent_ts.push(v),
-                None => break,
-            }
-        }
-        println!("Got requests {}", empirical_sent_ts.len());
-
-        let mut counter = HashMap::new();
-        for ts in empirical_sent_ts {
-            let sec = ts.duration_since(start_of_the_world).as_secs();
-            if let Some(val) = counter.get_mut(&sec) {
-                *val += 1;
-            } else {
-                counter.insert(sec, 1);
-            }
-        }
-        println!("{:?}", counter);
+        send_channel
+            .send(Event::TrialDone)
+            .expect("Error sending trial done event");
     }
 }

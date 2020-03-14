@@ -1,103 +1,101 @@
-use async_timer::oneshot::{Oneshot, Timer};
-use hyper::Client;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
+use structopt::StructOpt;
 use tokio::runtime::Runtime;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 use load_generator::bencher::Bencher;
+use load_generator::reporter::Reporter;
 use load_generator::server::Server;
 
-// async fn bench(num_requests: usize) {
-//     let client = Arc::new(Client::new());
+// #[macro_use]
+// extern crate log;
 
-//     let mut futures: Vec<tokio::task::JoinHandle<_>> = vec![];
-//     let start_of_the_world = Instant::now();
-//     let (tx, mut rx) = mpsc::channel::<Instant>(9999);
+#[derive(Debug, StructOpt)]
+#[structopt(name = "load_generator", about = "HTTP based load generator.")]
+struct Opt {
+    #[structopt(short = "n", default_value = "1")]
+    num_benchers: usize,
 
-//     // TODO: use channels to implement a sink for sent timestamp
-//     //       so we can track the empirical requests per seconds
+    #[structopt(long)]
+    url: String,
 
-//     // let mut sent_timestamps: Vec<Instant> = vec![];
-//     // let mut before = Instant::now();
-//     for _ in 0..num_requests {
-//         let uri = "http://localhost:3000".parse().unwrap();
-//         // let uri = "http://localhost:8000".parse().unwrap();
-//         let shared_client = client.clone();
-//         let mut tx = tx.clone();
-//         let handle = tokio::spawn(async move {
-//             let start = Instant::now();
-//             let resp = shared_client.get(uri).await.unwrap();
-//             let end = Instant::now();
-//             let duration = end - start;
-//             let ms = duration.as_millis();
-//             tx.send(start).await;
-//             // println!("Response: {}, took {} ms", resp.status(), ms);
-//         });
-//         // handle.await;
-//         // sending 10 qps
-//         let before = Instant::now();
-//         // delay_for(Duration::from_nanos(100)).await;
-//         Timer::new(Duration::from_micros(4300)).await;
-//         let after = Instant::now();
-//         println!("Precison: {} us", (after - before).as_micros());
-//         // before = after;
-//         futures.push(handle);
-//     }
+    #[structopt(long, default_value = "1000")]
+    num_requests: usize,
 
-//     drop(tx); // Drop the original tx because it will never be used.
-
-//     for fut in futures {
-//         fut.await;
-//     }
-//     println!("All request done!");
-//     let mut empirical_sent_ts: Vec<Instant> = vec![];
-//     loop {
-//         let val = rx.recv().await;
-//         println!("{:?}", val);
-//         match val {
-//             Some(v) => empirical_sent_ts.push(v),
-//             None => break,
-//         }
-//     }
-//     println!("Got requests {}", empirical_sent_ts.len());
-
-//     let mut counter = HashMap::new();
-//     for ts in empirical_sent_ts {
-//         let sec = ts.duration_since(start_of_the_world).as_secs();
-//         if let Some(val) = counter.get_mut(&sec) {
-//             *val += 1;
-//         } else {
-//             counter.insert(sec, 1);
-//         }
-//     }
-//     println!("{:?}", counter);
-// }
+    #[structopt(long, default_value = "1000")]
+    delay_us: u64,
+}
 
 fn main() {
+    env_logger::init();
+    let mut opt = Opt::from_args();
+    println!("Configuration: {:?}", opt);
+
+    let mut start_sever = false;
+    if opt.url.eq_ignore_ascii_case("local") {
+        println!("Using bundled server");
+        start_sever = true;
+        opt.url = "http://127.0.0.1:3000".to_string();
+    } else {
+        assert!(
+            opt.url.starts_with("http://"),
+            "url doesn't start with http:// !"
+        );
+    }
+
     let mut rt = Runtime::new().unwrap();
 
-    let mut server = Server {
-        local_port: 3000,
-        batch_size: 1,
-    };
-
-    let mut bencher = Bencher {
-        num_requests: 300,
-        url: "http://127.0.0.1:3000".to_string(),
-        delay_for_us: 1000,
-    };
+    let mut benchers: Vec<Bencher> = vec![];
+    for _ in 0..opt.num_benchers {
+        let url = opt.url.clone();
+        benchers.push(Bencher {
+            num_requests: opt.num_requests,
+            url: url,
+            delay_for_us: opt.delay_us,
+        });
+    }
 
     rt.block_on(async {
-        let (req_tx, resp_rx) = oneshot::channel();
-        let server_future = tokio::spawn(server.serve(req_tx));
-        let signal = resp_rx.await.unwrap();
-        println!("signal received, it is {}", signal);
-        let bencher_future = tokio::spawn(bencher.bench());
-        bencher_future.await;
-        drop(server_future);
-        // server_future.await;
+        let mut server_future: Option<JoinHandle<()>> = None;
+        if start_sever {
+            let server = Server {
+                local_port: 3000,
+                batch_size: 1,
+            };
+            let (req_tx, resp_rx) = oneshot::channel();
+            server_future = Some(tokio::spawn(async move {
+                server.serve(req_tx).await;
+            }));
+            let _ = resp_rx.await.unwrap();
+        }
+
+        let (send_chan, recv_chan) = std::sync::mpsc::channel();
+
+        let reporter_thread = std::thread::spawn(move || {
+            let mut reporter = Reporter {
+                receiver: recv_chan,
+            };
+            reporter.start(opt.num_requests as u64 * opt.num_benchers as u64);
+        });
+
+        let mut bencher_handles: Vec<JoinHandle<()>> = vec![];
+        for bencher in benchers {
+            let cloned_chan = send_chan.clone();
+            bencher_handles.push(tokio::spawn(
+                async move { bencher.bench(cloned_chan).await },
+            ));
+        }
+        drop(send_chan);
+        for handle in bencher_handles {
+            handle.await.expect("Errored benching");
+        }
+
+        if start_sever {
+            drop(server_future.unwrap());
+        }
+
+        reporter_thread
+            .join()
+            .expect("Error joining reporter thread");
     });
 }

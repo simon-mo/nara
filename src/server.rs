@@ -1,8 +1,10 @@
+use async_timer::oneshot::{Oneshot, Timer};
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server as HyperServer};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 enum Command {
@@ -57,9 +59,9 @@ impl Server {
                     let batcher_sender = batcher_sender.clone();
                     async move {
                         let (req_tx, resp_rx) = oneshot::channel::<u64>();
-                        batcher_sender.send((Command::Increment, req_tx));
-                        let res = resp_rx.await.unwrap();
-                        println!("We are batch {:#?}", res);
+                        let _ = batcher_sender.send((Command::Increment, req_tx));
+                        let _ = resp_rx.await.unwrap();
+                        Timer::new(Duration::from_micros(100)).await;
                         Ok::<_, Infallible>(Response::new(Body::from("Hello, World")))
                     }
                 }))
@@ -67,7 +69,9 @@ impl Server {
         });
 
         let server = HyperServer::bind(&addr).serve(make_svc);
-        notify_event.send(true);
+        notify_event
+            .send(true)
+            .expect("Notify server start event failed.");
         if let Err(e) = server.await {
             eprintln!("server error: {}", e);
         }
