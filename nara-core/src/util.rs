@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 
+#[derive(Default)]
 pub struct Counter<K>
 where
     K: std::cmp::Eq,
     K: std::hash::Hash,
+    K: std::cmp::Ord,
 {
     pub map: BTreeMap<K, u64>,
 }
@@ -13,11 +15,10 @@ where
     K: std::cmp::Eq,
     K: std::hash::Hash,
     K: std::cmp::Ord,
+    K: std::default::Default,
 {
     pub fn new() -> Counter<K> {
-        return Counter {
-            map: BTreeMap::new(),
-        };
+        Default::default()
     }
 
     pub fn record(&mut self, key: K) {

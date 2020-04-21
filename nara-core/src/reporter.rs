@@ -12,7 +12,7 @@ fn count_qps(mut instants: Vec<Instant>) -> BTreeMap<u64, u64> {
     for ts in instants {
         counter.record(ts.duration_since(start).as_secs());
     }
-    return counter.map;
+    counter.map
 }
 
 type Message = (Instant, Instant);
@@ -36,7 +36,7 @@ impl Reporter {
             .progress_chars("##-");
 
         let sent_progress = ProgressBar::new(num_requests);
-        sent_progress.set_style(sty.clone());
+        sent_progress.set_style(sty);
         sent_progress.set_message("Sending Requests");
 
         let mut empirical_sent_ts: Vec<Instant> = vec![];

@@ -1,8 +1,13 @@
 [package]
-name = "nara"
+name = "nara-core"
 version = "0.1.0"
 authors = ["simon-mo <xmo@berkeley.edu>"]
 edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "nara_core"
 
 [dependencies]
 hyper = "0.13"
@@ -10,11 +15,5 @@ tokio = { version = "0.2", features = ["full"] }
 futures = "0.3.4"
 async-timer = {version = "0.7.3", features = ["tokio_on"]}
 indicatif = "0.14.0"
-structopt = "0.3.11"
-env_logger = "0.7.1"
 log = "0.4.8"
 hdrhistogram = "7.0.0"
-nara-core = { path = "./nara-core"}
-
-[workspace]
-members = ["nara-core", "nara_py"]

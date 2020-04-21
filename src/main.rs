@@ -3,15 +3,14 @@ use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use nara::bencher::Bencher;
-use nara::reporter::Reporter;
-use nara::server::Server;
 
-// #[macro_use]
-// extern crate log;
+use nara_core::bencher::Bencher;
+use nara_core::reporter::Reporter;
+use nara_core::server::Server;
+
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "nara", about = "HTTP based load generator.")]
+#[structopt(name = "nara", about = "Profiler for HTTP and Python Services.")]
 struct Opt {
     #[structopt(short = "n", default_value = "1")]
     num_benchers: usize,
