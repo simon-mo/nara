@@ -3,15 +3,15 @@ use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use load_generator::bencher::Bencher;
-use load_generator::reporter::Reporter;
-use load_generator::server::Server;
+use nara::bencher::Bencher;
+use nara::reporter::Reporter;
+use nara::server::Server;
 
 // #[macro_use]
 // extern crate log;
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "load_generator", about = "HTTP based load generator.")]
+#[structopt(name = "nara", about = "HTTP based load generator.")]
 struct Opt {
     #[structopt(short = "n", default_value = "1")]
     num_benchers: usize,
@@ -24,6 +24,9 @@ struct Opt {
 
     #[structopt(long, default_value = "1000")]
     delay_us: u64,
+
+    #[structopt(long, default_value = "5")]
+    max_conn: usize,
 }
 
 fn main() {
@@ -50,8 +53,9 @@ fn main() {
         let url = opt.url.clone();
         benchers.push(Bencher {
             num_requests: opt.num_requests,
-            url: url,
+            url,
             delay_for_us: opt.delay_us,
+            max_conn: opt.max_conn,
         });
     }
 

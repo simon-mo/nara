@@ -1,10 +1,11 @@
 use crate::util::Counter;
+use hdrhistogram::Histogram;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-fn count_qps(mut instants: Vec<Instant>) -> HashMap<u64, u64> {
+fn count_qps(mut instants: Vec<Instant>) -> BTreeMap<u64, u64> {
     instants.sort();
     let start = instants[0];
     let mut counter = Counter::new();
@@ -21,6 +22,7 @@ pub enum Event {
     RequestDone(Message),
     RequestErrored(hyper::Error),
     TrialDone,
+    WaitForConn(Duration),
 }
 
 pub struct Reporter {
@@ -40,6 +42,7 @@ impl Reporter {
         let mut empirical_sent_ts: Vec<Instant> = vec![];
         let mut empirical_recv_ts: Vec<Instant> = vec![];
         let mut error_counter = Counter::new();
+        let mut wait_time_hist = Histogram::<u64>::new(3).unwrap();
 
         while let Ok(message) = self.receiver.recv() {
             match message {
@@ -52,6 +55,9 @@ impl Reporter {
                     error_counter.record(format!("{}", error));
                 }
                 Event::TrialDone => sent_progress.finish(),
+                Event::WaitForConn(duration) => {
+                    wait_time_hist.record(duration.as_micros() as u64).unwrap();
+                }
             }
         }
 
@@ -60,6 +66,15 @@ impl Reporter {
         if empirical_recv_ts.len() != num_requests as usize {
             println!("Errors");
             println!("{:?}", error_counter.map);
+        }
+
+        println!("Wait Time Percentiles");
+        for perc in &[0.1, 0.5, 0.9, 0.95, 0.99] {
+            println!(
+                "{} Percentile: {}",
+                perc,
+                wait_time_hist.value_at_quantile(*perc)
+            )
         }
 
         println!("Sent QPS {:?}", count_qps(empirical_sent_ts));

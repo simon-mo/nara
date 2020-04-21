@@ -1,47 +1,62 @@
 use async_timer::oneshot::{Oneshot, Timer};
 use hyper::Body;
-use hyper::Client;
+use hyper::{Client, Request};
 
 use crate::reporter::Event;
 use std::sync::mpsc as ThreadedMpcs;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 pub struct Bencher {
     pub num_requests: usize,
     pub url: String,
     pub delay_for_us: u64,
+    pub max_conn: usize,
 }
 
 impl Bencher {
     pub async fn bench(self, send_channel: ThreadedMpcs::Sender<Event>) {
         let mut conn = hyper::client::HttpConnector::new();
-        conn.set_reuse_address(true).set_nodelay(true);
+        conn.set_reuse_address(true);
+        conn.set_nodelay(true);
 
-        let client = Arc::new(
-            // Client::new()
-            Client::builder()
-                .pool_max_idle_per_host(0)
-                .build::<_, Body>(conn),
-        );
+        let client = Client::builder()
+            .pool_idle_timeout(None)
+            .pool_max_idle_per_host(self.max_conn)
+            .build::<_, Body>(conn);
 
         let mut futures: Vec<tokio::task::JoinHandle<_>> = vec![];
+
+        let sema = Arc::new(Semaphore::new(self.max_conn));
 
         for _ in 0..self.num_requests {
             send_channel
                 .send(Event::RequestStart)
                 .expect("Error sending request start event");
-            let uri = self.url.parse().unwrap();
+            let uri = self.url.clone();
             let shared_client = client.clone();
-
+            let shared_sema = sema.clone();
             let cloned_channel = send_channel.clone();
             let handle = tokio::spawn(async move {
+                let bgn_acq = Instant::now();
+                let permit = shared_sema.acquire().await;
+                cloned_channel
+                    .send(Event::WaitForConn(bgn_acq.elapsed()))
+                    .expect("Error sending wait for conn profile event");
                 let start = Instant::now();
-                let resp = shared_client.get(uri).await;
+
+                let req = Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request builder faled");
+                let resp = shared_client.request(req).await;
                 match resp {
-                    Ok(_) => {
+                    Ok(r) => {
+                        let _ = hyper::body::to_bytes(r.into_body()).await;
                         cloned_channel
                             .send(Event::RequestDone((start, Instant::now())))
                             .expect("Error sending request done event");
@@ -52,10 +67,10 @@ impl Bencher {
                             .expect("Error sending request errored event");
                     }
                 }
+                // Explicitly release the semaphore here.
+                drop(permit);
             });
-
             Timer::new(Duration::from_micros(self.delay_for_us)).await;
-
             futures.push(handle);
         }
 

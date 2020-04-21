@@ -1,21 +1,22 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 pub struct Counter<K>
 where
     K: std::cmp::Eq,
     K: std::hash::Hash,
 {
-    pub map: HashMap<K, u64>,
+    pub map: BTreeMap<K, u64>,
 }
 
 impl<K> Counter<K>
 where
     K: std::cmp::Eq,
     K: std::hash::Hash,
+    K: std::cmp::Ord,
 {
     pub fn new() -> Counter<K> {
         return Counter {
-            map: HashMap::new(),
+            map: BTreeMap::new(),
         };
     }
 
