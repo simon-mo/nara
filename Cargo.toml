@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 hyper = "0.13"
-tokio = { version = "0.2", features = ["full"] }
+tokio = { version = "0.2.18", features = ["full"] }
 futures = "0.3.4"
 async-timer = {version = "0.7.3", features = ["tokio_on"]}
 indicatif = "0.14.0"

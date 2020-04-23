@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::Semaphore;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone)]
 pub struct Bencher {
@@ -32,6 +33,8 @@ impl Bencher {
 
         let sema = Arc::new(Semaphore::new(self.max_conn));
 
+        let query_id = Arc::new(AtomicUsize::new(0));
+
         for _ in 0..self.num_requests {
             send_channel
                 .send(Event::RequestStart)
@@ -40,6 +43,7 @@ impl Bencher {
             let shared_client = client.clone();
             let shared_sema = sema.clone();
             let cloned_channel = send_channel.clone();
+            let query_id = query_id.clone();
             let handle = tokio::spawn(async move {
                 let bgn_acq = Instant::now();
                 let permit = shared_sema.acquire().await;
@@ -58,7 +62,7 @@ impl Bencher {
                     Ok(r) => {
                         let _ = hyper::body::to_bytes(r.into_body()).await;
                         cloned_channel
-                            .send(Event::RequestDone((start, Instant::now())))
+                            .send(Event::RequestDone((query_id.fetch_add(1, Ordering::SeqCst), start, Instant::now())))
                             .expect("Error sending request done event");
                     }
                     Err(err) => {
